@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +39,7 @@ type YogoClient struct {
 
 type YogoResponse []models.Customer
 type AuthResponse struct {
-	User	models.Customer		`json:"user"`
+	//User	models.Customer		`json:"user"`
 	Token	string	`json:"token"`
 }
 
@@ -60,6 +61,25 @@ func getRandomUserAgent() string {
 
 	n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(userAgents))))
 	return userAgents[n.Int64()]
+}
+
+func getResponse(resp *http.Response) ([]byte, error) {
+	var reader io.Reader = resp.Body
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gzipReader, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gzip reader: %v", err)
+		}
+		defer gzipReader.Close()
+		reader = gzipReader
+	}
+
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	return body, nil
 }
 
 func (c *YogoClient) getToken() error {
@@ -95,12 +115,11 @@ func (c *YogoClient) getToken() error {
 	defer resp.Body.Close()
 	
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-    body, _ := io.ReadAll(resp.Body) // Read the error page
-    return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(body))
+    resBody, _ := io.ReadAll(resp.Body) // Read the error page
+    return fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(resBody))
 	}
 
-	var reader io.Reader = resp.Body
-	resBody, err := io.ReadAll(reader)
+	resBody, err := getResponse(resp)
 	if err != nil {
 		return err
 	}
@@ -158,18 +177,7 @@ func (vc *YogoClient) makeRequest(reqType string, endpoint string, params map[st
     return nil, fmt.Errorf("API error: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	var reader io.Reader = resp.Body
-
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzipReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gzip reader: %v", err)
-		}
-		defer gzipReader.Close()
-		reader = gzipReader
-	}
-
-	body, err := io.ReadAll(reader)
+	body, err := getResponse(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -227,5 +235,27 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	log.Print(customers)
+
+	csvExport(customers)
+}
+
+func csvExport(data []models.Customer) error {
+    file, err := os.Create("result.csv")
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+
+    writer := csv.NewWriter(file)
+    defer writer.Flush()
+
+    for _, value := range data {
+		if value.DateOfBirth != "" {
+			record := []string{value.DateOfBirth, value.Email}
+        if err := writer.Write(record); err != nil {
+            return err // let's return errors if necessary, rather than having a one-size-fits-all error handler
+        }
+		}
+    }
+    return nil
 }
